@@ -1,0 +1,40 @@
+*RHTN_in_OneFlorida_Part_1_Mapping_Drug_Data_withRxNorm*
+************************************************************************************;
+*		Program Name:  Mapping_Drug_Data_withRxNorm   
+*		Program Description: Map data by RxNorm CUI
+*		Author: Caitrin W. McDonough
+*		Modified From: WHI Drug mapping
+*		Date:  March 4, 2019
+*
+*************************************************************************************;
+
+**Make a list of unique RxCuis from RxNorm_CUI field in dataset - compare and see if same issues as before***;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.RX_NORM_CUI AS
+	SELECT DISTINCT RHTN_RX_20180612.RXNORM_CUI
+	FROM K01_Aim1.RHTN_RX_20180612
+	ORDER BY RXNORM_CUI;
+QUIT;
+
+
+**Importing RX_Norm list***;
+PROC IMPORT out=K01_Aim1.RX_Norm_6
+	DATAFILE="D:\Users\caitrinmcdonough\Documents\KL2 Project Documents and Forms\Mapping of Drug Data to RxNorm\RX_Norm_Map_6.xlsx"
+	DBMS=EXCEL
+	REPLACE;
+		SHEET="RX_norm";
+	GETNAMES=YES;
+RUN;
+
+DATA OF_DRUGS_RX_NORM;
+	SET K01_Aim1.RX_NORM_CUI;
+	RxCUI = input(RXNORM_CUI,8. );
+RUN;
+
+PROC SORT DATA=WORK.OF_DRUGS_RX_NORM;
+	BY RXCUI;
+RUN;
+
+PROC SORT DATA= K01_Aim1.RX_NORM_6;
+	BY RXCUI;
+RUN;
