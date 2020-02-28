@@ -1,0 +1,159 @@
+			*RHTN_in_OneFlorida_Part_2_b_Formatting_Data*
+************************************************************************************;
+*		Program Name: Formatting_Data    
+*		Program Description: Data formatting to run the computable phenotypes
+*		Author: Caitrin W. McDonough
+*		Date:  March 4, 2019
+*
+*************************************************************************************;
+
+**May need to add parts to define working paths, macros, format libraries etc;
+
+* Start date of the study period;
+*%LET start='01MAR2011'd;	
+
+* End date of the study period;	
+*%LET end='26FEB2016'd;		
+
+* The anchor date for age calculation;
+*%LET anchor='26FEB2016'd;
+
+
+***May need to add info to define macro variables for vital_source, enc_type, diagnosis, condition***;
+
+**OPTION SYMBOLGEN MPRINT MLOGIC;
+
+******************SUBSETTING DATASETS**********************;
+********************************************;
+
+****Check for distinct PATID in the demographics table****;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.DISTINT_Dem AS
+	SELECT DISTINCT DEM_age.PATID
+	FROM K01_Aim1.DEM_Age
+	ORDER BY PATID;
+QUIT;
+
+ 
+***Subset diagnosis table to just HTN diagnoses***;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.HTN_Diangosis_2 AS
+	SELECT DISTINCT RHTN_DX_20180612.PATID,DX,DX_TYPE
+	FROM K01_Aim1.RHTN_DX_20180612
+	WHERE ((DX LIKE '401%' AND DX_TYPE EQ '09') 
+			OR (DX LIKE '401%' AND DX_TYPE EQ '9')
+			OR (DX LIKE 'I10' AND DX_TYPE EQ '10')
+			OR (DX LIKE 'I10' AND DX_TYPE EQ '9')
+			OR (DX LIKE 'i10' AND DX_TYPE EQ '10'))
+	ORDER BY PATID;
+QUIT;
+
+
+***Subset diagnosis table to just HTN diagnoses - only select PatID***;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.HTN_Diangosis_patID_2 AS
+	SELECT DISTINCT RHTN_DX_20180612.PATID
+	FROM K01_Aim1.RHTN_DX_20180612
+	WHERE ((DX LIKE '401%' AND DX_TYPE EQ '09') 
+			OR (DX LIKE '401%' AND DX_TYPE EQ '9')
+			OR (DX LIKE 'I10' AND DX_TYPE EQ '10')
+			OR (DX LIKE 'I10' AND DX_TYPE EQ '9')
+			OR (DX LIKE 'i10' AND DX_TYPE EQ '10'))
+	ORDER BY PATID;
+QUIT;
+
+
+
+PROC FREQ DATA=K01_Aim1.HTN_Diangosis_2;
+Tables DX DX_Type DX*DX_Type;
+RUN;
+
+
+***Subset conditions table to just HTN diagnoses***;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.HTN_Condition AS
+	SELECT DISTINCT RHTN_Condition_20180612.PATID,CONDITION,CONDITION_TYPE
+	FROM K01_Aim1.RHTN_Condition_20180612
+	WHERE ((CONDITION LIKE '401%' AND CONDITION_TYPE EQ '09') 
+			OR (CONDITION LIKE '401%' AND CONDITION_TYPE EQ '9')
+			OR (CONDITION LIKE 'I10' AND CONDITION_TYPE EQ '10')
+			OR (CONDITION LIKE 'I10' AND CONDITION_TYPE EQ '9')
+			OR (CONDITION LIKE 'i10' AND CONDITION_TYPE EQ '10'))
+	ORDER BY PATID;
+QUIT;
+
+
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.HTN_Condi_patID AS
+	SELECT DISTINCT RHTN_Condition_20180612.PATID
+	FROM K01_Aim1.RHTN_Condition_20180612
+	WHERE ((CONDITION LIKE '401%' AND CONDITION_TYPE EQ '09') 
+			OR (CONDITION LIKE '401%' AND CONDITION_TYPE EQ '9')
+			OR (CONDITION LIKE 'I10' AND CONDITION_TYPE EQ '10')
+			OR (CONDITION LIKE 'I10' AND CONDITION_TYPE EQ '9')
+			OR (CONDITION LIKE 'i10' AND CONDITION_TYPE EQ '10'))
+	ORDER BY PATID;
+QUIT;
+
+
+***Check Conditions table***;
+PROC FREQ DATA=K01_Aim1.HTN_Condition;
+Tables CONDITION CONDITION_TYPE CONDITION*CONDITION_TYPE;
+RUN;
+
+***Make sure to use vitals table exacting using the Procedures code**;
+***Subset Vitals table to just entries with SBP or DBP readings***;
+	***This is the ALL_BP table****;
+DATA K01_Aim1.VITALS_BP;
+SET K01_Aim1.Vitals_BP_EM;
+IF DIASTOLIC > 0 OR SYSTOLIC > 0;
+RUN;
+
+***Subset prescribing table to those with RxNORM data*******;
+DATA K01_Aim1.PRESCRIBING_RXNORM;
+SET K01_Aim1.PRESCRIBING_UP;
+IF RXNORM_CUI > 0;
+RUN;
+
+**double checking the number of distinct patids in the prescribing data;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.PRESCRIBING_RXNORM_patID AS
+	SELECT DISTINCT PRESCRIBING_RXNORM.PATID
+	FROM K01_Aim1.PRESCRIBING_RXNORM
+	ORDER BY PATID;
+QUIT;
+
+**Creating High BP table**********************; 
+**Make sure to start with BP table created from the Procedures codes**;
+
+PROC SQL NOPRINT;
+
+****Get BP values SBP>/=140 and/or DBP >/=90 DID NOT include measure date restrictions****;
+	CREATE TABLE K01_Aim1.HIGHBP AS
+	SELECT VITALS_BP.PATID, ENCOUNTERID, MEASURE_DATE, MEASURE_TIME, VITAL_SOURCE, DIASTOLIC, SYSTOLIC
+	FROM K01_Aim1.VITALS_BP
+	WHERE SYSTOLIC GE 140 OR DIASTOLIC GE 90; 
+QUIT;
+
+
+****Get Last BP Measurement****;
+**Make sure to start with BP table created from the Procedures codes**;
+PROC SORT DATA=K01_Aim1.VITALS_BP;
+	BY PATID MEASURE_DATE SYSTOLIC DIASTOLIC;
+RUN;
+
+DATA K01_Aim1.LAST_BP;
+	SET K01_Aim1.VITALS_BP;
+	BY PATID MEASURE_DATE;
+	if last.PATID;
+RUN;
+
+**double checking the number of distinct patids in the BP dataset;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.Vitals_BP_patID AS
+	SELECT DISTINCT VITALS_BP.PATID
+	FROM K01_Aim1.VITALS_BP
+	ORDER BY PATID;
+QUIT;
+
+
