@@ -1,0 +1,89 @@
+*RHTN_in_OneFlorida_Part_1_a_Mapping_Drug_Data_v3*
+************************************************************************************;
+*		Program Name:    Mapping_Drug_Data 
+*		Program Description: Merging RxNorm CUI map with the whole drug file
+*		Author: Caitrin W. McDonough
+*		Modified From: WHI Drug mapping
+*		Date:  March 4, 2019
+*
+*************************************************************************************;
+
+**Make raw prescribing information upper case***;
+DATA K01_Aim1.PRESCRIBING_UP;
+	SET K01_Aim1.RHTN_RX_20180612;
+	RAW_RX_MED_NAME_UP = UPCASE (RAW_RX_MED_NAME);
+RUN;
+
+
+**SUBSETTING FILE***;
+DATA K01_Aim1.PRESCRIBING_UP_1;
+	SET K01_Aim1.PRESCRIBING_UP;
+	KEEP PATID ENCOUNTERID RX_ORDER_DATE RX_START_DATE RX_END_DATE RX_REFILLS RX_DAYS_SUPPLY RX_FREQUENCY RXNORM_CUI RAW_RX_MED_NAME_UP;
+RUN;
+
+
+**Remove and format characters in raw med name***;
+
+DATA PRESCRIBING_RXNORM;
+	SET K01_Aim1.PRESCRIBING_UP_1;
+	RxCUI= input(RXNORM_CUI,8. );
+RUN;
+
+
+**Subsetting again***;
+DATA K01_Aim1.PRESCRIBING_RXNORM_2;
+	SET WORK.PRESCRIBING_RXNORM;
+	KEEP PATID ENCOUNTERID RX_ORDER_DATE RX_START_DATE RX_END_DATE RX_REFILLS RX_DAYS_SUPPLY RX_FREQUENCY RXNORM_CUI RAW_RX_MED_NAME_UP RxCUI;
+RUN;
+
+
+**CAN skip this section if already have this read in**:
+**Importing RX list***;
+**PROC IMPORT out=OF_RHTN.RX_Norm_1_text
+	DATAFILE="C:\Users\cmcdonough\My Documents\KL2 Project Documents and Forms\Mapping of Drug Data to RxNorm\RX_Norm_map_text.xls"
+	DBMS=EXCEL
+	REPLACE;
+**		SHEET="RX_norm";
+**	GETNAMES=YES;
+**RUN;
+
+*DATA OF_RHTN2.RX_1;
+*	SET OF_RHTN.RX;
+*	DRUG_UP=UPCASE(NAME_LOWCASE);
+*RUN;
+
+**READ IN BOTH TABLES THAT I WANT TO MERGE***;
+DATA DRUG_RXNORM;
+	SET K01_Aim1.PRESCRIBING_RXNORM_2;
+RUN;
+
+DATA RX_NORM;
+	SET K01_Aim1.RX_NORM_6;
+RUN;
+
+**MERGE Drug Name list with Prescribing table***;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim1.PRESCRIBING_DRUG_RXNORM6 AS
+	SELECT *
+	FROM RX_NORM, DRUG_RXNORM
+	WHERE RX_NORM.RXCUI = DRUG_RXNORM.RXCUI
+	ORDER BY DRUG_RXNORM.PATID;
+QUIT;
+
+
+**Subset to unique anithypertensive data**;
+DATA K01_Aim1.PRESCRIBING_DRUG_RXNORM6_1;
+	SET K01_Aim1.PRESCRIBING_DRUG_RXNORM6;
+RUN;
+
+*SORTING ADDED FOR COMPARISON**;
+
+PROC SORT DATA = K01_Aim1.PRESCRIBING_DRUG_RXNORM6_1 (KEEP=RxCUI Name Rx_Norm_Drug_Class Drug_class drug_count PATID ENCOUNTERID RX_ORDER_DATE RX_START_DATE RX_END_DATE RX_REFILLS RX_DAYS_SUPPLY RX_FREQUENCY RXNORM_CUI
+	RAW_RX_MED_NAME_UP) NODUPKEY;
+	BY PATID RX_ORDER_DATE RAW_RX_MED_NAME_UP;
+RUN;
+
+**Summary stats on antihypertensive prescribing table***;
+PROC FREQ DATA=K01_Aim1.PRESCRIBING_DRUG_RXNORM6_1;
+	TABLES RX_NORM_DRUG_CLASS Drug_Class;
+RUN;
