@@ -1,0 +1,449 @@
+
+***RHTN_in_OneFlorida_Part_3_Exposure_Merging*
+************************************************************************************;
+*		Program Name:  RHTN and Controlled HTN computable phenotype algorithms - final   
+*		Program Description: Actual coding for the algorithms, drug mapping and data preparation done in prior steps
+*		Author: Caitrin W. McDonough
+*		Date:  Sept 26, 2019
+*		Built to work off of RxNorm Drug Mapping
+*************************************************************************************;
+
+
+***Impute missing RX_start and RX_end dates****;
+**Too many possible errors if RX_days_supply is missing - so going to have all of those be 1 year then;
+DATA K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN;
+	SET K01_Aim2.PRESCRIBING_DRUG_RXNORM6_1;
+	IF RX_START_DATE = .	 THEN RX_START_DATE = RX_ORDER_DATE;
+	IF RX_REFILLS >= 0 AND RX_QUANTITY > 0 AND RX_END_DATE = .	THEN RX_END_DATE = 
+		RX_START_DATE + ((RX_REFILLS + 1) * RX_QUANTITY);
+	IF  RX_QUANTITY > 0 AND RX_REFILLS = . AND RX_END_DATE = .	THEN RX_END_DATE = 
+		RX_START_DATE + (RX_QUANTITY);
+	IF RX_END_DATE = . AND RX_QUANTITY = . AND RX_REFILLS >= 0 	THEN RX_END_DATE =
+		RX_START_DATE + 365;
+	IF RX_END_DATE = . AND RX_QUANTITY = . AND RX_REFILLS = . 	THEN RX_END_DATE =
+		RX_START_DATE + 365;
+RUN;
+
+**Select out unique prescriptions**;
+DATA K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2;
+	SET K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN;
+RUN;
+
+PROC SORT DATA = K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2 (KEEP=RxCUI Name Rx_Norm_Drug_Class Drug_Class drug_count ID ENCOUNTERID RX_ORDER_DATE RX_START_DATE RX_END_DATE RX_DOSE_ORDERED RX_QUANTITY RX_REFILLS RX_DAYS_SUPPLY RX_FREQUENCY 
+	RX_PRN_FLAG RXNORM_CUI RAW_RX_MED_NAME_UP) NODUPKEY;
+	BY ID Rx_Norm_Drug_Class RX_START_DATE RX_END_DATE;
+RUN;
+
+**Summary stats on antihypertensive prescribing table WITHOUT DUPS***;
+PROC FREQ DATA=K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2;
+	TABLES RX_NORM_DRUG_CLASS;
+RUN;
+
+
+**List of unique IDS in drug data AND List of unique IDS in BP data**;
+PROC SQL NOPRINT;
+	CREATE TABLE K01_Aim2.ANTIHTN_RxNORM_ID AS
+	SELECT DISTINCT ID
+	FROM K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2;
+
+	CREATE TABLE K01_Aim2.BP_ID AS
+	SELECT DISTINCT ID
+	FROM K01_Aim2.VITALS_BP_EM;
+
+QUIT;
+
+**Merge across lists - overlap between drug - BP - diagnosis/condition***;
+DATA K01_Aim2.ID_RxNORM_BP_HTN;
+	MERGE K01_Aim2.ANTIHTN_RxNORM_ID(IN=b) K01_Aim2.Vitals_BP_em_patID(IN=c) K01_Aim2.HTN_CONDITION K01_Aim2.HTN_DIANGOSIS_2;
+	BY ID;
+	IF b AND c;
+RUN;
+
+PROC SORT DATA=K01_Aim2.ID_RxNORM_BP_HTN NODUPKEY;
+BY ID;
+RUN;
+
+
+**Split RxNorm Drug Class, use Drug Class field to split out to single counts***;
+DATA  K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2_1;
+	SET K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2;
+		
+				delims = '_';
+				numDrug = countw(Drug_Class, delims);
+				do i = 1 to numDrug;
+					Drug_Class_1 = scan(Drug_Class, i, delims);
+				output;
+				end;
+			drop delims i;
+		
+RUN;
+
+**delete drugs without RxCUIs **;
+DATA K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2_2;
+	SET K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2_1;
+	if Drug_Class = '' then delete;
+RUN;
+
+
+PROC SORT DATA = K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2_2;
+	BY ID DRUG_CLASS_1 RX_START_DATE RX_END_DATE;
+RUN;
+
+***Merge overlapping exposures****;
+**Connecting all overlapping or concatinating prescriptions of the same drug classes**;
+**Create lag variable to hold start date of last prescription of same drug**;
+DATA K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN3;
+	SET K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN2_2;
+	BY ID DRUG_CLASS_1;
+	RETAIN lag_start lag_end;
+	FORMAT lag_start lag_end MMDDYY8.;
+
+	IF NOT FIRST.DRUG_CLASS_1 THEN DO;
+		IF lag_start LE RX_START_DATE LE lag_end THEN RX_START_DATE=lag_start;
+		IF 0 LT (lag_end-RX_START_DATE) LE 2 THEN RX_END_DATE=RX_END_DATE+(lag_end-RX_START_DATE);
+		IF lag_start LE RX_END_DATE LE lag_end THEN RX_END_DATE=lag_end;
+	END;
+
+	lag_start=RX_START_DATE;
+	lag_end=RX_END_DATE;
+RUN;
+
+**Output last record of the same prescription start date, since all overlapping prescriptiosn were stitched together**;
+***This will create records with continuous medication data***;
+DATA K01_Aim2.PRESCRIBING_RXNORM_REDUCE;
+	SET K01_Aim2.PRESCRIBING_RXNORM_ANTIHTN3 (DROP=lag_start lag_end);
+	BY ID DRUG_CLASS_1 RX_START_DATE;
+	IF LAST.RX_START_DATE THEN OUTPUT;
+RUN;
+
+
+**Define start and end for macro use***;
+*Start date of the study period**;
+%LET start='01JAN2015'd;
+*End date of the study period**;
+%LET end='26AUG2019'd;
+
+
+**List drug usage for EACH date based on the start and end date of medication episode***;
+DATA K01_Aim2.MEDS_BY_DAY_RXNORM;
+	SET K01_Aim2.PRESCRIBING_RXNORM_REDUCE (KEEP=ID RX_START_DATE RX_END_DATE DRUG_CLASS_1);
+	FORMAT DAY date9.;
+	DO DAY=&start TO &end;
+		IF (RX_START_DATE LE day LE RX_END_DATE) THEN DO;
+			DRUG_USED=1;
+			OUTPUT;
+		END;
+	END;
+RUN;
+
+
+**Remove duplicate records and arrange drug usage by date***;
+PROC SORT DATA=K01_Aim2.MEDS_BY_DAY_RXNORM (DROP=RX_START_DATE RX_END_DATE) NODUPKEY;
+	BY ID DAY DRUG_CLASS_1;
+RUN;
+
+
+** Sum up the number of drug classes used for each day by each patient **;
+PROC SUMMARY DATA=K01_Aim2.MEDS_BY_DAY_RXNORM SUM;
+	BY ID Day;
+	VAR Drug_used;
+	OUTPUT OUT=K01_Aim2.daily_use_rxnorm SUM=Drug_used;
+RUN;
+
+
+** To identify patients potentially qualify for case type 1 (>=4 medications simultaneously), 
+	first read in the days with >= 4 medications **;
+DATA K01_Aim2.Medi_4_RxNorm_short;
+	SET K01_Aim2.daily_use_rxnorm(DROP=_type_ _freq_);
+	WHERE Drug_used GE 4;
+RUN;
+
+**make sure macro processor on**;
+proc options option = MACRO;
+run;
+
+*** Macro to stretch each day of >=N medication into continuous episodes ***;
+%MACRO stretch(inf);
+	DATA &inf;
+		SET &inf;
+		BY ID;
+
+		* Create date variable polyphram_start and polypharm_end to hold the start and end dates of 
+			poly-medication period and variable lag_day to hold the day of last record of >=4 medication ;
+		RETAIN lag_day polyphram_start polypharm_end;
+		FORMAT lag_day polyphram_start polypharm_end Date9.;
+
+		IF FIRST.ID THEN DO;
+			polyphram_start=day;
+			polypharm_end=day;
+		END;
+		IF NOT FIRST.ID THEN DO;
+
+			* If current day is continuous from last record, stretch the poly-medication period *;
+			IF (day-lag_day) EQ 1 THEN polypharm_end=day;	
+
+			* If current day is not continuous from last record, restart the poly-medication period *;
+			IF (day-lag_day) GT 1 THEN DO;					
+				polyphram_start=day;
+				polypharm_end=day;
+			END;
+
+		END;
+		lag_day=day;
+	RUN;
+
+	* Output the longest episodes of each poly-medication period *;
+	DATA K01_Aim2.PolyMed_period_RxNorm_short;
+		SET &inf (KEEP=ID polyphram_start polypharm_end);
+		BY ID polyphram_start;
+
+		* The longest episode of poly-medication needs to be more than 2 days to account for transition *;
+		IF (LAST.polyphram_start) AND (polypharm_end-polyphram_start) GT 2 THEN OUTPUT;
+	RUN;
+%MEND stretch;
+
+
+** Call macro "stretch" to output prescribing records that meet RHTN case type 1 medication criteria **;
+%Stretch(K01_Aim2.Medi_4_RxNorm_short);
+
+
+** Flag episodes that qualified for RHTN case type 1 
+	(Have 2 occasions of >=4 drug classes and at least 1 months apart) **;
+DATA K01_Aim2.Case_Type1_RxNorm_short;
+	SET K01_Aim2.PolyMed_period_RxNorm_short;
+	BY ID;
+
+	* Medication period with >=4 drug  classes used for more than a month is qualified for the criterion *;
+	IF (polypharm_end-polyphram_start) GE 30 THEN Case_Type1=1;
+
+	RETAIN lag_start lag_end;
+	FORMAT lag_start lag_end date9.;
+
+	* Calculate the duration between the 2 most faraway time points in 2 poly-medication episodes *;
+	IF FIRST.ID THEN DO;
+		lag_start=polyphram_start;
+		lag_end=polypharm_end;
+	END;
+
+	* If the 2 time points are at least 1 month apart, the patient is also qualified for RHTN case type 1 *;
+	IF NOT FIRST.ID THEN DO;
+		IF (polypharm_end-lag_start) GE 30 THEN Case_Type1=1;
+	END;
+	IF Case_Type1=1 THEN OUTPUT;
+	DROP lag_start lag_end;
+RUN;
+
+
+
+** Unique patients in case type 1 to be excluded from case type 2 **;
+PROC SORT DATA=K01_Aim2.Case_Type1_RxNorm_short OUT=K01_Aim2.Case1_RxNorm_short(KEEP=ID) NODUPKEY;
+	BY ID;
+RUN;
+
+
+** antihypertensive prescribing records for patients qualified for case type 1 **;
+DATA K01_Aim2.Case_Type1_RxNorm_antihtn_short;
+	MERGE K01_Aim2.PRESCRIBING_DRUG_RXNORM6_1(IN=in1) K01_Aim2.Case1_RxNorm_short(IN=in2);
+	BY ID;
+	IF in1 and in2;
+RUN;
+
+** Case type 2 requires patients DO NOT meet case type 1 medication criteria 
+	and have 3 simultaneous	Medication **;
+DATA K01_Aim2.Medi_3_RxNorm_short;
+	MERGE K01_Aim2.daily_use_rxnorm(IN=in1 WHERE=(Drug_used EQ 3) DROP=_type_ _freq_) K01_Aim2.Case1_RxNorm_short(IN=in2);
+	BY ID;
+	IF in1 and NOT in2;
+RUN;
+
+
+** Call macro "stretch" to output prescribing records that meet case type 2 medication criteria **;
+%Stretch(K01_Aim2.Medi_3_RxNorm_short);
+
+
+** Case type 2 patients need to have uncontrolled blood pressure at least one month since a continuous medication
+	of 3 concurrent drug classes, thus the BP measure times need to be during a poly-medication episode **;
+PROC SQL;
+	CREATE TABLE K01_Aim2.BP_Med_RxNorm_short AS
+	SELECT B.ID, polyphram_start, polypharm_end, MEASURE_DATE, DIASTOLIC, SYSTOLIC
+	FROM K01_Aim2.PolyMed_period_RxNorm_short AS A, K01_Aim2.VITALS_BP_EM AS B
+	WHERE (A.ID EQ B.ID) 
+		AND (polyphram_start LE MEASURE_DATE LE polypharm_end)
+		AND (MEASURE_DATE-polyphram_start) GE 30
+	ORDER BY B.ID, MEASURE_DATE;
+QUIT;
+
+**Sort Case type 2 BP data to make sure have lowest BP readings first***;
+PROC SORT DATA=K01_Aim2.BP_Med_RxNorm_short;
+	BY ID MEASURE_DATE DIASTOLIC SYSTOLIC;
+RUN;
+
+**Keep only BP GE 140/90**;
+DATA K01_Aim2.BP_Med_RxNorm_short;
+	SET K01_Aim2.BP_Med_RxNorm_short;
+	IF DIASTOLIC GE 90 OR
+	 SYSTOLIC GE 140 THEN HIGH_BP=1;
+	ELSE HIGH_BP=0;
+RUN;
+
+DATA K01_Aim2.BP_MED_RxNorm_HIGH_short;
+	SET K01_Aim2.BP_Med_RxNorm_short;
+	WHERE HIGH_BP=1;
+RUN;
+
+** Identify qualified blood pressure records that are at least 1 month apart **;
+DATA K01_Aim2.Case_Type2_RxNorm_short;
+	SET K01_Aim2.BP_Med_RxNorm_HIGH_short;
+	BY ID MEASURE_DATE;
+
+	RETAIN lag_measure_date;
+	FORMAT lag_measure_date date9.;
+
+	IF FIRST.ID THEN lag_measure_date=MEASURE_DATE;
+
+	IF NOT FIRST.ID THEN DO;
+		IF (MEASURE_DATE-lag_measure_date) GE 30 THEN Case_Type2=1;
+	END;
+RUN;
+
+PROC SORT DATA=K01_Aim2.Case_Type2_RxNorm_short(KEEP=ID Case_Type2) OUT=K01_Aim2.Case2_RxNorm_short NODUPKEY;
+	BY ID;
+	WHERE Case_Type2=1;
+RUN;
+
+** Obtain all the qualifying BP records for case type 2 patients **;
+DATA K01_Aim2.Case2_RxNorm_BP_short;
+	MERGE K01_Aim2.BP_MED_RxNorm_HIGH_short(IN=in1) K01_Aim2.Case2_RxNorm_short(IN=in2 KEEP=ID);
+	BY ID;
+	IF in1 AND in2;
+RUN;
+
+**make list to combine RHTN cases (type 1 and type 2)**;
+DATA K01_Aim2.RHTN_CASES_RxNorm_short;
+	MERGE K01_Aim2.CASE1_RxNorm_short K01_Aim2.CASE2_RxNorm_short;
+	BY ID;
+	RHTN='1';
+RUN;
+
+PROC SORT DATA=K01_Aim2.RHTN_CASES_RxNorm_short OUT=K01_Aim2.RHTN_CASES_RxNorm_short(KEEP=ID) NODUPKEY;
+	BY ID;
+RUN;
+
+**Code for controlled HTN patients - similar to case type 2 - two or fewer drugs and bp <140/90**;
+** Controlled HTN patients DO NOT meet case type 1 or case type 2 criteria***;
+
+DATA K01_Aim2.Medi_2_RxNorm_short;
+	MERGE K01_Aim2.daily_use_rxnorm(IN=in1 WHERE=(Drug_used LE 2) DROP=_type_ _freq_) K01_Aim2.RHTN_CASES_RxNorm_short(IN=in2);
+	BY ID;
+	IF in1 and NOT in2;
+RUN;
+
+
+** Call macro "stretch" to output prescribing records that meet controlled HTN medication criteria **;
+%Stretch(K01_Aim2.Medi_2_RxNorm_short);
+
+
+**Controlled HTN patients must have controlled blood pressure at least one month since a continuous medication 
+	of 2 or fewer drug classes**;
+**Added coding for 80% BP control over the study period**;
+
+PROC SQL;
+	CREATE TABLE K01_Aim2.BP_Med_Ctl_short AS
+	SELECT B.ID, polyphram_start, polypharm_end, MEASURE_DATE, DIASTOLIC, SYSTOLIC
+	FROM K01_Aim2.PolyMed_period_RxNorm_short AS A, K01_Aim2.VITALS_BP_EM AS B
+	WHERE (A.ID EQ B.ID) 
+		AND (polyphram_start LE MEASURE_DATE LE polypharm_end)
+		AND (MEASURE_DATE-polyphram_start) GE 30
+	ORDER BY B.ID, MEASURE_DATE;
+QUIT;
+
+
+**Keep only BP LT 140/90;
+DATA K01_Aim2.BP_MED_Ctl_short;
+	SET K01_Aim2.BP_MED_Ctl_short;
+	IF DIASTOLIC GE 90 OR
+	 SYSTOLIC GE 140 THEN HIGH_BP=1;
+	ELSE HIGH_BP=0;
+RUN;
+
+proc sort DATA=K01_Aim2.BP_MED_Ctl_short;
+by ID measure_date;
+run;
+
+
+DATA K01_Aim2.BP_MED_Ctl_short;
+	SET K01_Aim2.BP_MED_Ctl_short;
+	visit + 1;
+	by ID;
+	if first.ID then visit=1;
+run;
+
+DATA K01_Aim2.BP_MED_Ctl_short;
+	SET K01_Aim2.BP_MED_Ctl_short;
+	by ID;
+	if first.ID then highbpnum = 0;
+		highbpnum + high_bp;
+run;
+
+DATA K01_Aim2.BP_MED_Ctl_last_short;
+	SET K01_Aim2.BP_MED_Ctl_short;
+	by ID;
+	if last.ID;
+run;
+
+DATA K01_Aim2.BP_MED_Ctl_last_short;
+	SET K01_Aim2.BP_MED_Ctl_last_short;
+	uncontrol = (highbpnum/visit) * 100;
+run;
+
+DATA K01_Aim2.BP_MED_Ctl_last_short;
+	SET K01_Aim2.BP_MED_Ctl_last_short;
+	if visit = 1 then delete;
+run;
+
+PROC FREQ DATA=K01_Aim2.BP_MED_Ctl_last_short;
+	TABLES uncontrol;
+RUN;
+
+DATA K01_Aim2.BP_MED_Ctl_ID_short;
+	SET K01_Aim2.BP_MED_Ctl_last_short;
+	if uncontrol > 20 then delete;
+run;
+
+PROC SORT DATA=K01_Aim2.BP_MED_Ctl_ID_short (KEEP=ID UNCONTROL);
+BY ID;
+RUN;
+
+DATA K01_Aim2.BP_MED_CONTROL_RxNorm_short;
+	MERGE K01_Aim2.BP_MED_Ctl_short K01_Aim2.BP_MED_Ctl_ID_short(IN=IN1);
+	BY ID;
+	IF IN1;
+RUN;
+
+** Identify qualified blood pressure records that are at least 1 month apart **;
+DATA K01_Aim2.Controlled_HTN_RxNorm_short;
+	SET K01_Aim2.BP_Med_CONTROL_RxNorm_short;
+	BY ID MEASURE_DATE;
+
+	RETAIN lag_measure_date;
+	FORMAT lag_measure_date date9.;
+
+	IF FIRST.ID THEN lag_measure_date=MEASURE_DATE;
+
+	IF NOT FIRST.ID THEN DO;
+		IF (MEASURE_DATE-lag_measure_date) GE 30 THEN CTRL_HTN=1;
+	END;
+RUN;
+
+PROC SORT DATA=K01_Aim2.Controlled_HTN_RxNorm_short(KEEP=ID CTRL_HTN) OUT=K01_Aim2.CtrlHTN_RxNorm_short NODUPKEY;
+	BY ID;
+	WHERE CTRL_HTN=1;
+RUN;
+
+** Obtain all the qualifying BP records for contolled BP **;
+DATA K01_Aim2.CtrlHTN_RxNorm_BP_short;
+	MERGE K01_Aim2.BP_Med_CONTROL_RxNorm_short(IN=in1) K01_Aim2.CtrlHTN_RxNorm_short(IN=in2 KEEP=ID);
+	BY ID;
+	IF in1 AND in2;
+RUN;
+
